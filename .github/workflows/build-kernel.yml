@@ -20,17 +20,30 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Android Kernel Build Action
-        uses: Fyg369/Kernel-Action@main
-        with:
-          kernel-url: ${{ github.event.inputs.kernel-url }}
-          kernel-branch: ${{ github.event.inputs.kernel-branch }}
-          config: ${{ github.event.inputs.config }}
-          arch: 'arm64'
-          aosp-clang: true
-          aosp-clang-version: 'r416183b'
-          aosp-gcc: true
-          anykernel3: true
-          anykernel3-url: 'https://github.com/osm0sis/AnyKernel3'
-          release: true
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc git wget curl python3 rsync cpio zlib1g-dev libstdc++6 lld clang libpcre3-dev
+
+      - name: Clone Kernel Source
+        run: |
+          git clone --depth=1 -b ${{ github.event.inputs.kernel-branch }} ${{ github.event.inputs.kernel-url }} kernel-source
+
+      - name: Clone Clang Toolchain
+        run: |
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r416183b clang
+
+      - name: Compile Kernel
+        run: |
+          cd kernel-source
+          export PATH="$GITHUB_WORKSPACE/clang/bin:$PATH"
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          
+          make O=out ARCH=arm64 ${{ github.event.inputs.config }}
+          make O=out ARCH=arm64 -j$(nproc) CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-android-
           
