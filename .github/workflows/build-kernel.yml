@@ -18,13 +18,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Enable Universe Repository
-        run: |
-          sudo add-apt-repository universe -y
-          sudo apt-get update
-
       - name: Checkout Android Kernel Build Action
         uses: Fyg369/Kernel-Action@main
         with:
