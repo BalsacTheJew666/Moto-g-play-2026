@@ -1,0 +1,211 @@
+name: Nevada XT2615-1 Stock Kernel Baseline
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_jobs:
+        description: "Parallel build jobs (0 = runner CPU count)"
+        required: false
+        default: "0"
+        type: string
+      run_build:
+        description: "Compile the stock-compatible baseline (disable for source/config audit only)"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nevada-stock-kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Audit and build Nevada baseline
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    env:
+      KERNEL_URL: https://github.com/MotorolaMobilityLLC/kernel-mtk.git
+      KERNEL_BRANCH: android-16-release-w1wn36.18-114
+      KERNEL_COMMIT: 0fa176ca7f56c349b51acd83684284c02ced5854
+      DEFCONFIG: mgk_64_k515_defconfig
+      NEVADA_FRAGMENT: arch/arm64/configs/ext_config/moto-mgk_64_k515-nevada.config
+      OUT_DIR: out
+      ARCH: arm64
+      SUBARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+      LLVM: "-14"
+      LLVM_IAS: "1"
+
+    steps:
+      - name: Check out workflow repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache clang-14 cpio flex \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libelf-dev libncurses-dev libssl-dev lld-14 llvm-14 \
+            pahole python3 python3-pip rsync
+
+      - name: Clone and pin official Motorola kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout "$KERNEL_URL" kernel-source
+          git -C kernel-source fetch --depth=1 origin "$KERNEL_COMMIT"
+          git -C kernel-source checkout --detach FETCH_HEAD
+
+          ACTUAL_COMMIT="$(git -C kernel-source rev-parse HEAD)"
+          if [[ "$ACTUAL_COMMIT" != "$KERNEL_COMMIT" ]]; then
+            echo "::error::Kernel source commit mismatch: $ACTUAL_COMMIT"
+            exit 1
+          fi
+
+          {
+            echo "KERNEL_URL=$KERNEL_URL"
+            echo "KERNEL_BRANCH=$KERNEL_BRANCH"
+            echo "KERNEL_COMMIT=$ACTUAL_COMMIT"
+            echo "KERNEL_SOURCE_DIR=$GITHUB_WORKSPACE/kernel-source"
+          } >> "$GITHUB_ENV"
+
+      - name: Audit Nevada source configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-source
+
+          test -f Makefile
+          test -x scripts/kconfig/merge_config.sh
+          test -f "arch/arm64/configs/$DEFCONFIG"
+          test -f "$NEVADA_FRAGMENT"
+
+          grep -q '^CONFIG_ARCH_MEDIATEK=y' "arch/arm64/configs/$DEFCONFIG"
+          grep -q '^CONFIG_MOT_NEVADA_CAMERA_PROJECT=y' "$NEVADA_FRAGMENT"
+          grep -q '^CONFIG_SND_SOC_NEVADA_AUDIO=y' "$NEVADA_FRAGMENT"
+
+          {
+            echo "Source commit: $(git rev-parse HEAD)"
+            echo "Defconfig: $DEFCONFIG"
+            echo "Nevada fragment: $NEVADA_FRAGMENT"
+            echo "Kernel version:"
+            make -s kernelversion
+            echo
+            echo "Compiler:"
+            clang-14 --version | head -n 1
+            echo
+            echo "Nevada fragment device markers:"
+            grep -E '^(CONFIG_MOT_NEVADA_CAMERA_PROJECT|CONFIG_SND_SOC_NEVADA_AUDIO|CONFIG_CUSTOM_KERNEL_IMGSENSOR)=' "$NEVADA_FRAGMENT"
+          } | tee ../source-audit.txt
+
+      - name: Configure stock-compatible Nevada baseline
+        if: ${{ inputs.run_build }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-source
+
+          export ARCH SUBARCH CROSS_COMPILE LLVM LLVM_IAS
+          mkdir -p "$OUT_DIR"
+
+          make O="$OUT_DIR" "$DEFCONFIG"
+
+          ARCH=arm64 scripts/kconfig/merge_config.sh \
+            -m -O "$OUT_DIR" \
+            "$OUT_DIR/.config" \
+            "$NEVADA_FRAGMENT"
+
+          make O="$OUT_DIR" olddefconfig
+
+          # Fail closed if the expected Nevada-specific settings did not survive
+          # Kconfig resolution.
+          grep -qx 'CONFIG_ARCH_MEDIATEK=y' "$OUT_DIR/.config"
+          grep -qx 'CONFIG_MOT_NEVADA_CAMERA_PROJECT=y' "$OUT_DIR/.config"
+          grep -qx 'CONFIG_SND_SOC_NEVADA_AUDIO=y' "$OUT_DIR/.config"
+
+          cp "$OUT_DIR/.config" ../nevada-baseline.config
+          make O="$OUT_DIR" savedefconfig
+          cp "$OUT_DIR/defconfig" ../nevada-baseline-defconfig
+
+      - name: Compile kernel baseline
+        if: ${{ inputs.run_build }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-source
+
+          export ARCH SUBARCH CROSS_COMPILE LLVM LLVM_IAS
+          JOBS="${{ inputs.build_jobs }}"
+          if [[ "$JOBS" == "0" ]]; then
+            JOBS="$(nproc)"
+          fi
+          if ! [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::build_jobs must be 0 or a positive integer"
+            exit 1
+          fi
+
+          set -o pipefail
+          make O="$OUT_DIR" -j"$JOBS" 2>&1 | tee ../kernel-build.log
+
+      - name: Collect build outputs and diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+
+          if [[ -d kernel-source/out ]]; then
+            mkdir -p diagnostics/kernel-output
+            [[ ! -f kernel-source/out/.config ]] || cp kernel-source/out/.config diagnostics/
+            [[ ! -f kernel-source/out/vmlinux ]] || cp kernel-source/out/vmlinux diagnostics/kernel-output/
+            [[ ! -f kernel-source/out/System.map ]] || cp kernel-source/out/System.map diagnostics/kernel-output/
+            [[ ! -f kernel-source/out/Module.symvers ]] || cp kernel-source/out/Module.symvers diagnostics/kernel-output/
+            if [[ -d kernel-source/out/arch/arm64/boot ]]; then
+              find kernel-source/out/arch/arm64/boot -maxdepth 4 -type f \
+                \( -name 'Image*' -o -name '*.dtb' -o -name '*.dtbo' \) \
+                -exec cp --parents {} diagnostics/kernel-output/ \;
+            fi
+            if [[ -d kernel-source/out ]]; then
+              find kernel-source/out -type f -name '*.ko' -print > diagnostics/kernel-output/modules-list.txt
+            fi
+          fi
+          [[ ! -f source-audit.txt ]] || cp source-audit.txt diagnostics/
+          [[ ! -f kernel-build.log ]] || cp kernel-build.log diagnostics/
+          [[ ! -f nevada-baseline.config ]] || cp nevada-baseline.config diagnostics/
+          [[ ! -f nevada-baseline-defconfig ]] || cp nevada-baseline-defconfig diagnostics/
+
+          {
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Workflow run: $GITHUB_RUN_ID"
+            echo "Run attempt: $GITHUB_RUN_ATTEMPT"
+            echo "Kernel URL: $KERNEL_URL"
+            echo "Kernel branch: $KERNEL_BRANCH"
+            echo "Pinned commit: $KERNEL_COMMIT"
+            echo "Defconfig: $DEFCONFIG"
+            echo "Nevada fragment: $NEVADA_FRAGMENT"
+            echo "Build requested: ${{ inputs.run_build }}"
+            echo "Runner: $RUNNER_OS"
+            echo "Date (UTC): $(date -u +%FT%TZ)"
+          } > diagnostics/build-metadata.txt
+
+          if [[ -d kernel-source/out/arch/arm64/boot ]]; then
+            find kernel-source/out/arch/arm64/boot -maxdepth 4 -type f \
+              \( -name 'Image*' -o -name '*.dtb' -o -name '*.dtbo' \) \
+              -print > diagnostics/kernel-output-files.txt
+          fi
+
+      - name: Upload build diagnostics and kernel outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nevada-xt2615-1-stock-baseline-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 14
