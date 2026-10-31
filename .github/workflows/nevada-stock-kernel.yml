@@ -55,6 +55,27 @@ jobs:
             libelf-dev libncurses-dev libssl-dev lld-14 llvm-14 \
             pahole python3 python3-pip rsync
 
+      - name: Expose and verify LLVM linker
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LLVM_LD="$(command -v ld.lld-14 || command -v ld.lld || true)"
+          if [[ -z "$LLVM_LD" ]]; then
+            echo "::error::Neither ld.lld-14 nor ld.lld was installed"
+            dpkg -L lld-14 2>/dev/null | grep '/ld.lld' || true
+            exit 1
+          fi
+
+          LLVM_BIN="$RUNNER_TEMP/llvm-bin"
+          mkdir -p "$LLVM_BIN"
+          ln -sf "$LLVM_LD" "$LLVM_BIN/ld.lld"
+          echo "$LLVM_BIN" >> "$GITHUB_PATH"
+
+          echo "Resolved LLVM linker: $LLVM_LD"
+          "$LLVM_BIN/ld.lld" --version
+          command -v ld.lld
+
       - name: Clone and pin official Motorola kernel source
         shell: bash
         run: |
