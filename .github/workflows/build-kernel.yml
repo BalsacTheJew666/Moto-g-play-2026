@@ -29,6 +29,7 @@ jobs:
           arch: 'arm64'
           aosp-clang: true
           aosp-clang-version: 'r416183b'
+          aosp-gcc: true
           anykernel3: true
           anykernel3-url: 'https://github.com/osm0sis/AnyKernel3'
           release: true
