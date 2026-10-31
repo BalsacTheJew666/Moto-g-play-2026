@@ -1,0 +1,35 @@
+name: Compile Moto G Play 2026 Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel-url:
+        description: 'URL of your Motorola kernel source repository'
+        required: true
+        default: 'https://github.com/your-username/your-motorola-kernel-repo'
+      kernel-branch:
+        description: 'Branch name'
+        required: true
+        default: 'main'
+      config:
+        description: 'Kernel defconfig file name'
+        required: true
+        default: 'nevada_defconfig'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Android Kernel Build Action
+        uses: Fyg369/Kernel-Action@main
+        with:
+          kernel-url: ${{ github.event.inputs.kernel-url }}
+          kernel-branch: ${{ github.event.inputs.kernel-branch }}
+          config: ${{ github.event.inputs.config }}
+          arch: 'arm64'
+          aosp-clang: true
+          aosp-clang-version: 'r416183b'
+          anykernel3: true
+          anykernel3-url: 'https://github.com/osm0sis/AnyKernel3'
+          release: true
+          
