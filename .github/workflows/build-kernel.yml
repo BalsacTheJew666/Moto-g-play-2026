@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       kernel-url:
-        description: 'URL of your Motorola kernel source repository'
+        description: https://github.com/crabcakes97/android_device_motorola_nevada_lineage
         required: true
         default: 'https://github.com/your-username/your-motorola-kernel-repo'
       kernel-branch:
-        description: 'Branch name'
+        description: main
         required: true
         default: 'main'
       config:
